@@ -16,6 +16,7 @@ def test_movies_endpoint_returns_json():
 
 
 def test_movies_endpoint_returns_valid_data():
+    # ci test
     with app.test_client() as client:
         response = client.get("/movies/")
         data = response.get_json()
@@ -24,6 +25,3 @@ def test_movies_endpoint_returns_valid_data():
         assert isinstance(data.get("movies"), list)
         assert len(data["movies"]) > 0
         assert "title" in data["movies"][0]
-
-
-# ci test

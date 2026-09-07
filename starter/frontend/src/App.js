@@ -4,6 +4,7 @@ import MovieDetails from './components/MovieDetails';
 import './App.css';
 
 export default function App() {
+  // ci test
   const [selectedMovie, setSelectedMovie] = useState(null);
 
   const handleMovieClick = (movie) => {
@@ -25,5 +26,3 @@ export default function App() {
     </div>
   );
 }
-
-// ci test
