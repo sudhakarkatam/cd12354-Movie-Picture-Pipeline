@@ -4,7 +4,7 @@ import MovieDetails from './components/MovieDetails';
 import './App.css';
 
 export default function App() {
-  // ci test
+  // Trigger Frontend CI
   const [selectedMovie, setSelectedMovie] = useState(null);
 
   const handleMovieClick = (movie) => {
