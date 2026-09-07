@@ -13,12 +13,12 @@ RUN apk update && \
   openssl \
   libffi-dev \
   python3-dev \
-  && pip install pipenv
+  && pip install --upgrade pip setuptools wheel && pip install pipenv
 
 RUN mkdir -p /var/www/app && mkdir /app
 
 COPY Pipfile* /app
-RUN cd /app && pipenv install --system --deploy
+RUN cd /app && pipenv install --system
 
 COPY . /app
 
