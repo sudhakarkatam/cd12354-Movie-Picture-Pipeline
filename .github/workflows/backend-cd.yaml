@@ -1,137 +1,159 @@
 name: Backend Continuous Deployment
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
     paths:
       - 'starter/backend/**'
-  workflow_dispatch:
 
 env:
   AWS_REGION: us-east-1
-  EKS_CLUSTER_NAME: cluster
   ECR_REPOSITORY: backend
+  EKS_CLUSTER_NAME: cluster
+
+defaults:
+  run:
+    working-directory: starter/backend
 
 jobs:
   lint:
-    name: Backend Lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Restore pip cache
+        uses: actions/cache@v4
         with:
-          path: ~/.local/share/virtualenvs
-          key: ${{ runner.os }}-pipenv-${{ hashFiles('starter/backend/Pipfile.lock') }}
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('starter/backend/Pipfile.lock') }}
           restore-keys: |
-            ${{ runner.os }}-pipenv-
-
-      - name: Install pipenv
-        run: pip install pipenv
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
-        working-directory: starter/backend
-        run: pipenv install --dev
+        run: |
+          pip install pipenv
+          echo "PIPENV_PYTHON=$(which python)" >> "$GITHUB_ENV"
+          pipenv install --dev
 
-      - name: Run linting
-        working-directory: starter/backend
+      - name: Run lint
         run: pipenv run lint
 
   test:
-    name: Backend Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Restore pip cache
+        uses: actions/cache@v4
         with:
-          path: ~/.local/share/virtualenvs
-          key: ${{ runner.os }}-pipenv-${{ hashFiles('starter/backend/Pipfile.lock') }}
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('starter/backend/Pipfile.lock') }}
           restore-keys: |
-            ${{ runner.os }}-pipenv-
-
-      - name: Install pipenv
-        run: pip install pipenv
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
-        working-directory: starter/backend
-        run: pipenv install --dev
+        run: |
+          pip install pipenv
+          echo "PIPENV_PYTHON=$(which python)" >> "$GITHUB_ENV"
+          pipenv install --dev
 
       - name: Run tests
-        working-directory: starter/backend
         run: pipenv run test
 
-  build:
-    name: Backend Build & Push
+  build-and-deploy:
     runs-on: ubuntu-latest
     needs: [lint, test]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Log in to Amazon ECR
+      - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push image to Amazon ECR
+      - name: Build, tag, and push image to ECR
+        id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest starter/backend
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
-  deploy:
-    name: Backend Deploy to EKS
-    runs-on: ubuntu-latest
-    needs: [build]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Log in to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+      - name: Install kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
 
       - name: Update kubeconfig
-        run: |
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
-      - name: Deploy to Kubernetes using Kustomize
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
+      - name: Deploy to EKS
+        working-directory: starter/backend/k8s
         run: |
-          cd starter/backend/k8s
-          kustomize edit set image backend=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          kustomize build | kubectl apply -f -
+          kustomize edit set image backend=${{ steps.build-image.outputs.image }}
+          kubectl apply -k .
+          kubectl rollout status deployment/backend
+
+      - name: Verify live deployment
+        run: |
+          echo "Deployed commit SHA: ${{ github.sha }}"
+          echo "Deployed image: ${{ steps.build-image.outputs.image }}"
+          echo "Waiting for LoadBalancer hostname to become available..."
+          for i in $(seq 1 30); do
+            URL=$(kubectl get svc backend -n default -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            if [ -n "$URL" ]; then
+              break
+            fi
+            echo "Attempt $i: not ready yet, waiting 10s..."
+            sleep 10
+          done
+          if [ -z "$URL" ]; then
+            echo "ERROR: LoadBalancer hostname never became available"
+            exit 1
+          fi
+          echo "Backend is live at: http://$URL/movies"
+          echo "---- Verifying /movies response from inside this pipeline run ----"
+          curl -sS -w "\nHTTP status: %{http_code}\n" "http://$URL/movies"
+
+      - name: Verify Kubernetes deployment
+        run: |
+          kubectl rollout status deployment/backend --timeout=180s || true
+          echo "----- Logging - kubectl get all ----- "
+          kubectl get all
+          echo "----- Logging - kubectl describe deploy ----- "
+          kubectl describe deploy backend
+
+      - name: Verify Backend ECR image
+        run: |
+          echo "----- Logging - Backend ECR Image Details ----- "
+          AWS_PAGER="" aws ecr describe-images --repository-name backend --region us-east-1
