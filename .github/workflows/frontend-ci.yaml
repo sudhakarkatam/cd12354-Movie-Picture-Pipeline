@@ -92,6 +92,12 @@ jobs:
         working-directory: starter/frontend
         run: npm ci
 
+      - name: Run tests
+        working-directory: starter/frontend
+        env:
+          CI: true
+        run: npm run test
+
       - name: Build Docker image
         run: |
           docker build \
